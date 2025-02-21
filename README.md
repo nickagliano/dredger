@@ -45,7 +45,7 @@ GITHUB_TOKEN=your_personal_access_token_here
 
 ### Usage
 To start scanning a repository:
-
+(NOT YET IMPLEMENTED)
 ```bash
 cargo run -- --repo https://github.com/username/repository
 ```
