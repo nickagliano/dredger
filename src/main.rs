@@ -1,18 +1,15 @@
-use base64;
-use base64::Engine;
 use clap::{Arg, Command};
 use colored::*;
 use dotenv::dotenv;
-use reqwest::Client;
-use serde_json::json;
-use std::error::Error;
+use dredger::client::client;
 use std::path::Path;
 use std::{
     env,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
     process::exit,
-}; // Bring the Engine trait into scope
+};
+use tokio;
 
 fn load_env() {
     let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
@@ -22,117 +19,6 @@ fn load_env() {
     } else {
         dotenv().ok(); // Load default .env file for production
     }
-}
-
-#[tokio::main]
-async fn main() {
-    // Parse CLI arguments
-    let matches = Command::new("Dredger")
-        .version("1.0")
-        .author("Nick Agliano <nickagliano@gmail.com>")
-        .about("GitHub Token Validator & Setup Tool")
-        .arg(
-            Arg::new("quiet")
-                .short('q')
-                .long("quiet")
-                .help("Run in quiet mode (minimal output)")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .get_matches();
-
-    let quiet = matches.get_flag("quiet");
-
-    load_env();
-
-    if !quiet {
-        println!("{}", "\nRunning Dredger...\n".bold().cyan());
-    }
-
-    loop {
-        // Check for existing token setup
-        if let Err(_) = check_and_setup(None) {
-            if quiet {
-                eprintln!("Error: No valid GitHub token found.");
-                exit(1);
-            } else {
-                setup(quiet); // Setup the token if it isn't found
-            }
-        }
-
-        // Validate token
-        if let Err(_) = validate_token().await {
-            if quiet {
-                eprintln!("Error: Invalid GitHub token.");
-                exit(1);
-            } else {
-                println!(
-                    "{}",
-                    "\n❌ Invalid GitHub token. Please try again.\n"
-                        .bold()
-                        .red()
-                );
-                setup(quiet); // Prompt user to enter a new token if invalid
-                continue; // Retry the validation after new token entry
-            }
-        }
-
-        if !quiet {
-            println!(
-                "{}",
-                "\n✅ GitHub Token verified. Proceeding...\n".bold().green()
-            );
-        }
-
-        break; // Exit loop once token is valid
-    }
-
-    if let Err(e) = open_test_pr().await {
-        if quiet {
-            eprintln!("Could not open pull request");
-            exit(1);
-        } else {
-            println!(
-                "{} {}",
-                "\n❌ Could not open pull request.\n".bold().red(),
-                e
-            );
-        }
-    } else {
-        println!("Success! Opened PR!")
-    }
-}
-
-fn check_and_setup(suffix: Option<&str>) -> Result<(), &'static str> {
-    // Determine which .env file to load based on the ENV variable
-    let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
-    let env_file = if env == "test" {
-        // Use a random suffix if provided, otherwise the default .env.test
-        if let Some(suffix) = suffix {
-            format!(".env.test.{}", suffix)
-        } else {
-            ".env.test".to_string()
-        }
-    } else {
-        ".env".to_string()
-    };
-
-    // Check if the correct .env file exists
-    if !Path::new(&env_file).exists() {
-        return Err("Missing .env file");
-    }
-
-    // Read the .env file content
-    let mut file_content = String::new();
-    let mut file = File::open(&env_file).expect("Unable to open .env file");
-    file.read_to_string(&mut file_content)
-        .expect("Unable to read .env file");
-
-    // Check if the GITHUB_PAT is set in the file
-    if !file_content.contains("GITHUB_PAT=") {
-        return Err("Missing GITHUB_PAT in .env file");
-    }
-
-    Ok(())
 }
 
 fn setup(quiet: bool) {
@@ -169,6 +55,12 @@ fn setup(quiet: bool) {
     io::stdin()
         .read_line(&mut token)
         .expect("Failed to read line");
+
+    if token.is_empty() {
+        eprintln!("Token cannot be empty.");
+        return;
+    }
+
     let token = token.trim();
 
     // Update the token in the file content or append if not present
@@ -210,229 +102,115 @@ fn setup(quiet: bool) {
     println!("{}", "Token saved successfully\n".yellow());
 }
 
-async fn validate_token() -> Result<(), String> {
-    let client = Client::new();
+#[tokio::main]
+async fn main() {
+    // Parse CLI arguments
+    let matches = Command::new("Dredger")
+        .version("1.0")
+        .author("Nick Agliano <nickagliano@gmail.com>")
+        .about("GitHub Token Validator & Setup Tool")
+        .arg(
+            Arg::new("quiet")
+                .short('q')
+                .long("quiet")
+                .help("Run in quiet mode (minimal output)")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .get_matches();
 
-    // Get the GitHub token from the environment variable
-    let token = env::var("GITHUB_PAT")
-        .map_err(|_| "Missing GITHUB_PAT environment variable".to_string())?;
+    let quiet = matches.get_flag("quiet");
 
-    // Determine the environment (default to production)
-    let current_env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
+    load_env();
 
-    // Choose the correct URL based on the environment
-    let url = if current_env == "test" {
-        // Use mockito's server URL and append "/user"
-        format!("{}/user", mockito::server_url())
-    } else {
-        "https://api.github.com/user".to_string()
-    };
+    if !quiet {
+        println!("{}", "\nRunning Dredger...\n".bold().cyan());
+    }
 
-    // Make the GET request with the necessary headers
-    let res = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "dredger") // GitHub requires a User-Agent header
-        .send()
-        .await;
-
-    // Process the response
-    match res {
-        Ok(response) => {
-            if response.status().is_success() {
-                Ok(())
+    loop {
+        // Check for existing token setup
+        if let Err(_) = check_and_setup(None) {
+            if quiet {
+                eprintln!("Error: No valid GitHub token found.");
+                exit(1);
             } else {
-                let status = response.status();
-                let body = response
-                    .text()
-                    .await
-                    .unwrap_or_else(|_| "Unknown error".to_string());
-                Err(format!("Request failed with status {}: {}", status, body))
+                setup(quiet); // Setup the token if it isn't found
             }
         }
-        Err(e) => Err(format!("Request failed with error: {}", e)),
-    }
-}
 
-async fn make_request<T>(
-    client: &Client,
-    url: &str,
-    method: reqwest::Method,
-    body: Option<serde_json::Value>,
-    token: &str,
-) -> Result<T, Box<dyn Error>>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let mut request = client
-        .request(method, url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", "dredger");
+        // Validate token
+        if let Err(_) = client::validate_token().await {
+            if quiet {
+                eprintln!("Error: Invalid GitHub token.");
+                exit(1);
+            } else {
+                println!(
+                    "{}",
+                    "\n❌ Invalid GitHub token. Please try again.\n"
+                        .bold()
+                        .red()
+                );
+                setup(quiet); // Prompt user to enter a new token if invalid
+                continue; // Retry the validation after new token entry
+            }
+        }
 
-    if let Some(body) = body {
-        request = request.json(&body);
-    }
+        if !quiet {
+            println!(
+                "{}",
+                "\n✅ GitHub Token verified. Proceeding...\n".bold().green()
+            );
+        }
 
-    let response = request.send().await?;
-    let status = response.status();
-
-    // Capture the response text to handle errors
-    let error_text = &response.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        // Use the captured error_text for error handling
-        eprintln!("Request failed: {}: {}", status, error_text);
-        return Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "Request failed",
-        )));
+        break; // Exit loop once token is valid
     }
 
-    // Parse the successful response into the expected result type
-    let response_json: T = serde_json::from_str(&error_text)?;
-    Ok(response_json)
+    if let Err(e) = client::open_test_pr().await {
+        if quiet {
+            eprintln!("Could not open pull request");
+            exit(1);
+        } else {
+            println!(
+                "{} {}",
+                "\n❌ Could not open pull request.\n".bold().red(),
+                e
+            );
+        }
+    } else {
+        println!("Success! Opened PR!")
+    }
+
+    client::read_repo().await.unwrap();
 }
 
-async fn create_branch(
-    client: &Client,
-    owner: &str,
-    repo: &str,
-    base_sha: &str,
-    new_branch: &str,
-    token: &str,
-) -> Result<(), Box<dyn Error>> {
-    let create_ref_url = format!("https://api.github.com/repos/{}/{}/git/refs", owner, repo);
-    let new_ref_body = json!({
-        "ref": format!("refs/heads/{}", new_branch),
-        "sha": base_sha,
-    });
+fn check_and_setup(suffix: Option<&str>) -> Result<(), &'static str> {
+    // Determine which .env file to load based on the ENV variable
+    let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
+    let env_file = if env == "test" {
+        // Use a random suffix if provided, otherwise the default .env.test
+        if let Some(suffix) = suffix {
+            format!(".env.test.{}", suffix)
+        } else {
+            ".env.test".to_string()
+        }
+    } else {
+        ".env".to_string()
+    };
 
-    let _: serde_json::Value = make_request(
-        client,
-        &create_ref_url,
-        reqwest::Method::POST,
-        Some(new_ref_body),
-        token,
-    )
-    .await?;
-    Ok(())
-}
+    // Check if the correct .env file exists
+    if !Path::new(&env_file).exists() {
+        return Err("Missing .env file");
+    }
 
-async fn add_file_to_repo(
-    client: &Client,
-    owner: &str,
-    repo: &str,
-    file_path: &str,
-    file_content: &str,
-    new_branch: &str,
-    token: &str,
-) -> Result<(), Box<dyn Error>> {
-    let create_file_url = format!(
-        "https://api.github.com/repos/{}/{}/contents/{}",
-        owner, repo, file_path
-    );
-    let encoded_content = base64::engine::general_purpose::STANDARD.encode(file_content);
+    // Read the .env file content
+    let mut file_content = String::new();
+    let mut file = File::open(&env_file).expect("Unable to open .env file");
+    file.read_to_string(&mut file_content)
+        .expect("Unable to read .env file");
 
-    let create_file_body = json!({
-        "message": format!("Add {}", file_path),
-        "content": encoded_content,
-        "branch": new_branch
-    });
-
-    let _: serde_json::Value = make_request(
-        client,
-        &create_file_url,
-        reqwest::Method::PUT,
-        Some(create_file_body),
-        token,
-    )
-    .await?;
-    Ok(())
-}
-
-async fn create_pull_request(
-    client: &Client,
-    owner: &str,
-    repo: &str,
-    base_branch: &str,
-    new_branch: &str,
-    title: &str,
-    body: &str,
-    token: &str,
-) -> Result<String, Box<dyn Error>> {
-    let create_pr_url = format!("https://api.github.com/repos/{}/{}/pulls", owner, repo);
-    let create_pr_body = json!({
-        "title": title,
-        "head": new_branch,
-        "base": base_branch,
-        "body": body
-    });
-
-    let pr_response_json: serde_json::Value = make_request(
-        client,
-        &create_pr_url,
-        reqwest::Method::POST,
-        Some(create_pr_body),
-        token,
-    )
-    .await?;
-    let pr_url = pr_response_json["html_url"]
-        .as_str()
-        .ok_or("PR URL not found")?
-        .to_string();
-
-    Ok(pr_url)
-}
-
-async fn open_test_pr() -> Result<(), Box<dyn Error>> {
-    let token = env::var("GITHUB_PAT").map_err(|_| "Missing GITHUB_PAT environment variable")?;
-    let client = Client::new();
-
-    let owner = "nickagliano";
-    let repo = "tbg-rust";
-    let base_branch = "master";
-    let new_branch = "hello-world-test-1";
-
-    // Get the SHA of the base branch
-    let base_ref_url = format!(
-        "https://api.github.com/repos/{}/{}/git/ref/heads/{}",
-        owner, repo, base_branch
-    );
-    let base_ref_resp: serde_json::Value =
-        make_request(&client, &base_ref_url, reqwest::Method::GET, None, &token).await?;
-    let base_sha = base_ref_resp["object"]["sha"]
-        .as_str()
-        .ok_or("Could not find base SHA")?;
-
-    // 1. Create a new branch
-    create_branch(&client, owner, repo, base_sha, new_branch, &token).await?;
-
-    // 2. Add a file
-    add_file_to_repo(
-        &client,
-        owner,
-        repo,
-        "hello.txt",
-        "hello world",
-        new_branch,
-        &token,
-    )
-    .await?;
-
-    // 3. Open a pull request
-    let pr_url = create_pull_request(
-        &client,
-        owner,
-        repo,
-        base_branch,
-        new_branch,
-        "Test PR: Hello World",
-        "This PR adds a hello world file.",
-        &token,
-    )
-    .await?;
-
-    println!("Pull request created: {}", pr_url);
+    // Check if the GITHUB_PAT is set in the file
+    if !file_content.contains("GITHUB_PAT=") {
+        return Err("Missing GITHUB_PAT in .env file");
+    }
 
     Ok(())
 }
@@ -521,7 +299,7 @@ mod tests {
         env::set_var("ENV", "test"); // Set ENV to test
 
         // Should return Err for invalid token
-        assert!(validate_token().await.is_err());
+        assert!(client::validate_token().await.is_err());
     }
 
     #[tokio::test]
@@ -536,7 +314,7 @@ mod tests {
         env::set_var("ENV", "test"); // Set ENV to test
 
         // Should return Err for API communication failure
-        assert!(validate_token().await.is_err());
+        assert!(client::validate_token().await.is_err());
     }
 
     #[tokio::test]
@@ -553,7 +331,7 @@ mod tests {
         env::set_var("ENV", "test");
 
         // Call the function with the full mock server URL
-        let result = validate_token().await;
+        let result = client::validate_token().await;
 
         match &result {
             Ok(_) => println!("Token validated successfully"),
