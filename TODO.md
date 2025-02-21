@@ -1,8 +1,8 @@
 # TODO:
 
 ## High-priority
-- [ ]
-
+- [ ] Containerize, somehow, the project w/ ollama server
+  - [ ] Nix? Good ol' Dockerfile?
 
 ## Medium
 - [ ]

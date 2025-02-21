@@ -1,7 +1,8 @@
 use clap::{Arg, Command};
 use colored::*;
 use dotenv::dotenv;
-use dredger::client::client;
+use dredger::github_client::client as github_client;
+use dredger::ollama_client::client as ollama_client;
 use std::path::Path;
 use std::{
     env,
@@ -138,7 +139,7 @@ async fn main() {
         }
 
         // Validate token
-        if let Err(_) = client::validate_token().await {
+        if let Err(_) = github_client::validate_token().await {
             if quiet {
                 eprintln!("Error: Invalid GitHub token.");
                 exit(1);
@@ -164,22 +165,27 @@ async fn main() {
         break; // Exit loop once token is valid
     }
 
-    if let Err(e) = client::open_test_pr().await {
-        if quiet {
-            eprintln!("Could not open pull request");
-            exit(1);
-        } else {
-            println!(
-                "{} {}",
-                "\n❌ Could not open pull request.\n".bold().red(),
-                e
-            );
-        }
-    } else {
-        println!("Success! Opened PR!")
-    }
+    // if let Err(e) = github_client::open_test_pr().await {
+    //     if quiet {
+    //         eprintln!("Could not open pull request");
+    //         exit(1);
+    //     } else {
+    //         println!(
+    //             "{} {}",
+    //             "\n❌ Could not open pull request.\n".bold().red(),
+    //             e
+    //         );
+    //     }
+    // } else {
+    //     println!("Success! Opened PR!")
+    // }
 
-    client::read_repo().await.unwrap();
+    let root_node = github_client::read_repo().await.unwrap();
+
+    match ollama_client::process_repo(&root_node).await {
+        Ok(response) => println!("LLM Response: {:?}", response),
+        Err(e) => eprintln!("Error querying Ollama: {}", e),
+    }
 }
 
 fn check_and_setup(suffix: Option<&str>) -> Result<(), &'static str> {
@@ -299,7 +305,7 @@ mod tests {
         env::set_var("ENV", "test"); // Set ENV to test
 
         // Should return Err for invalid token
-        assert!(client::validate_token().await.is_err());
+        assert!(github_client::validate_token().await.is_err());
     }
 
     #[tokio::test]
@@ -314,7 +320,7 @@ mod tests {
         env::set_var("ENV", "test"); // Set ENV to test
 
         // Should return Err for API communication failure
-        assert!(client::validate_token().await.is_err());
+        assert!(github_client::validate_token().await.is_err());
     }
 
     #[tokio::test]
@@ -331,7 +337,7 @@ mod tests {
         env::set_var("ENV", "test");
 
         // Call the function with the full mock server URL
-        let result = client::validate_token().await;
+        let result = github_client::validate_token().await;
 
         match &result {
             Ok(_) => println!("Token validated successfully"),

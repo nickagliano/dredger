@@ -30,6 +30,35 @@ pub enum RepoNode {
     },
 }
 
+impl ToString for RepoNode {
+    fn to_string(&self) -> String {
+        fn format_node(node: &RepoNode, depth: usize) -> String {
+            let indent = "  ".repeat(depth);
+            match node {
+                RepoNode::File {
+                    name,
+                    path,
+                    content: _,
+                } => {
+                    format!("{}📄 {} ({})\n", indent, name, path)
+                }
+                RepoNode::Directory {
+                    name,
+                    path,
+                    children,
+                } => {
+                    let mut output = format!("{}📁 {} ({})\n", indent, name, path);
+                    for child in children {
+                        output.push_str(&format_node(child, depth + 1));
+                    }
+                    output
+                }
+            }
+        }
+        format_node(self, 0)
+    }
+}
+
 // Fetch file content separately
 async fn fetch_file_content(
     client: &Client,
@@ -130,7 +159,7 @@ fn read_repo_recursive(
     })
 }
 
-pub async fn read_repo() -> Result<(), Box<dyn Error>> {
+pub async fn read_repo() -> Result<RepoNode, Box<dyn Error>> {
     let client = Client::new();
     let repo_owner = "nickagliano".to_string();
     let repo_name = "dredger".to_string();
@@ -141,9 +170,7 @@ pub async fn read_repo() -> Result<(), Box<dyn Error>> {
     let root_node =
         read_repo_recursive(client, repo_owner, repo_name, "".to_string(), github_token).await?;
 
-    println!("{:#?}", root_node);
-
-    Ok(())
+    Ok(root_node)
 }
 
 pub async fn validate_token() -> Result<(), String> {
