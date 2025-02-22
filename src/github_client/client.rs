@@ -1,65 +1,16 @@
+use super::data::{RepoContent, RepoNode};
+use crate::utils::errors::DredgerError;
+use crate::utils::tokens::{count_tokens, TokenizerError};
 use base64::prelude::*;
 use base64::Engine;
 use futures::future::BoxFuture;
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::json;
 use std::env;
 use std::error::Error;
+use std::path::Path;
+use tokenizers::Tokenizer;
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RepoContent {
-    pub name: String,
-    pub path: String,
-    pub r#type: String,          // "file" or "dir"
-    pub content: Option<String>, // Only present in single file requests
-}
-
-#[derive(Debug)]
-pub enum RepoNode {
-    File {
-        name: String,
-        path: String,
-        content: String,
-    },
-    Directory {
-        name: String,
-        path: String,
-        children: Vec<RepoNode>,
-    },
-}
-
-impl ToString for RepoNode {
-    fn to_string(&self) -> String {
-        fn format_node(node: &RepoNode, depth: usize) -> String {
-            let indent = "  ".repeat(depth);
-            match node {
-                RepoNode::File {
-                    name,
-                    path,
-                    content: _,
-                } => {
-                    format!("{}📄 {} ({})\n", indent, name, path)
-                }
-                RepoNode::Directory {
-                    name,
-                    path,
-                    children,
-                } => {
-                    let mut output = format!("{}📁 {} ({})\n", indent, name, path);
-                    for child in children {
-                        output.push_str(&format_node(child, depth + 1));
-                    }
-                    output
-                }
-            }
-        }
-        format_node(self, 0)
-    }
-}
-
-// Fetch file content separately
 async fn fetch_file_content(
     client: &Client,
     repo_owner: &str,
@@ -75,7 +26,7 @@ async fn fetch_file_content(
     let response = client
         .get(&url)
         .header("Authorization", format!("Bearer {}", github_token))
-        .header("User-Agent", "my-rust-app")
+        .header("User-Agent", "dredger")
         .send()
         .await?;
 
@@ -96,9 +47,10 @@ fn read_repo_recursive(
     client: Client,
     repo_owner: String,
     repo_name: String,
+    tokenizer_path: String,
     path: String,
     github_token: String,
-) -> BoxFuture<'static, Result<RepoNode, Box<dyn Error>>> {
+) -> BoxFuture<'static, Result<RepoNode, Box<DredgerError>>> {
     Box::pin(async move {
         let url = format!(
             "https://api.github.com/repos/{}/{}/contents/{}",
@@ -110,10 +62,15 @@ fn read_repo_recursive(
             .header("Authorization", format!("Bearer {}", github_token))
             .header("User-Agent", "my-rust-app")
             .send()
-            .await?;
+            .await
+            .map_err(|e| Box::new(DredgerError::ReqwestError(e)))?;
 
         if response.status().is_success() {
-            let repo_contents: Vec<RepoContent> = response.json().await?;
+            let repo_contents: Vec<RepoContent> = response
+                .json()
+                .await
+                .map_err(|e| Box::new(DredgerError::ReqwestError(e)))?;
+
             let mut children = Vec::new();
 
             for file in repo_contents {
@@ -128,16 +85,36 @@ fn read_repo_recursive(
                     .await
                     .unwrap_or_else(|_| "Failed to fetch content".to_string());
 
+                    // let tokenizer_path = "tokenizers/llama.json";
+                    //
+                    let copy_of_tokenizer_path = tokenizer_path.clone();
+
+                    if !Path::new(&copy_of_tokenizer_path).exists() {
+                        return Err(Box::new(DredgerError::TokenizerError(
+                            TokenizerError::FileNotFound(tokenizer_path.to_string()),
+                        )));
+                    }
+
+                    let tokenizer = Tokenizer::from_file(copy_of_tokenizer_path).map_err(|e| {
+                        Box::new(DredgerError::TokenizerError(TokenizerError::LoadError(
+                            e.to_string(),
+                        )))
+                    })?;
+
+                    let token_count = count_tokens(&content, &tokenizer).unwrap();
+
                     children.push(RepoNode::File {
                         name: file.name,
                         path: file.path,
                         content,
+                        token_count,
                     });
                 } else if file.r#type == "dir" {
                     let subdir_node = read_repo_recursive(
                         client.clone(),
                         repo_owner.clone(),
                         repo_name.clone(),
+                        tokenizer_path.clone(),
                         file.path.clone(),
                         github_token.clone(),
                     )
@@ -147,38 +124,69 @@ fn read_repo_recursive(
                 }
             }
 
+            // Sum the token counts from all children (files and directories)
+            let total_token_count = children
+                .iter()
+                .map(|child| child.token_count())
+                .sum::<usize>();
+
             Ok(RepoNode::Directory {
                 name: path.clone(),
                 path,
                 children,
+                token_count: total_token_count,
             })
         } else {
             eprintln!("Failed to fetch repository contents: {}", response.status());
-            Err("Failed to fetch repository contents".into())
+            Err(Box::new(DredgerError::GithubClientError(format!(
+                "Failed to fetch repository contents: {}",
+                response.status()
+            ))))
         }
     })
 }
 
-pub async fn read_repo() -> Result<RepoNode, Box<dyn Error>> {
+/// This method calls read_repo_recursive in order to extract info from
+/// the code repository at github.com/{repo_owner}/{repo_name}
+///
+/// It parses GitHub file-trees into `RepoNode`s, which are a core
+/// data structure in Dredger.
+///
+/// Although it might be a little bit unclear, for efficiency sake,
+/// we're also calculating the # of language model tokens in this
+/// GitHub client, in the read_repo / read_repo_recursive functions.
+///
+// TODO: Add branch name?
+pub async fn read_repo(
+    repo_owner: String,
+    repo_name: String,
+    tokenizer_path: String,
+) -> Result<RepoNode, Box<DredgerError>> {
     let client = Client::new();
-    let repo_owner = "nickagliano".to_string();
-    let repo_name = "dredger".to_string();
-    let github_token = std::env::var("GITHUB_PAT")?; // Load token from env
 
-    println!("✅ GitHub Token verified. Proceeding...");
+    // At this point the github_token was already validated,
+    // so we don't check again here--we just load the token
+    let github_token =
+        std::env::var("GITHUB_PAT").map_err(|e| Box::new(DredgerError::VarError(e)))?;
 
-    let root_node =
-        read_repo_recursive(client, repo_owner, repo_name, "".to_string(), github_token).await?;
+    let root_node = read_repo_recursive(
+        client,
+        repo_owner,
+        repo_name,
+        tokenizer_path,
+        "".to_string(), // Indicates root, start of recursion
+        github_token,
+    )
+    .await?;
 
     Ok(root_node)
 }
 
-pub async fn validate_token() -> Result<(), String> {
+pub async fn validate_token() -> Result<(), DredgerError> {
     let client = Client::new();
 
     // Get the GitHub token from the environment variable
-    let token = env::var("GITHUB_PAT")
-        .map_err(|_| "Missing GITHUB_PAT environment variable".to_string())?;
+    let token = env::var("GITHUB_PAT").map_err(|e| DredgerError::VarError(e))?;
 
     // Determine the environment (default to production)
     let current_env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
@@ -210,10 +218,13 @@ pub async fn validate_token() -> Result<(), String> {
                     .text()
                     .await
                     .unwrap_or_else(|_| "Unknown error".to_string());
-                Err(format!("Request failed with status {}: {}", status, body))
+                Err(DredgerError::GithubClientError(format!(
+                    "Request failed with status {}: {}",
+                    status, body
+                )))
             }
         }
-        Err(e) => Err(format!("Request failed with error: {}", e)),
+        Err(e) => Err(DredgerError::ReqwestError(e)),
     }
 }
 

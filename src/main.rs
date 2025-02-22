@@ -1,17 +1,14 @@
 use clap::{Arg, Command};
 use colored::*;
 use dotenv::dotenv;
+use dredger::core;
 use dredger::github_client::client as github_client;
-use dredger::ollama_client::client as ollama_client;
-use std::path::Path;
-use std::{
-    env,
-    fs::{File, OpenOptions},
-    io::{self, Read, Write},
-    process::exit,
-};
+use dredger::github_client::data::RepoNode;
+use dredger::utils::cli::{check_and_setup, setup};
+use std::{env, process::exit};
 use tokio;
 
+// TODO: Constantize/enum-ize the environments (prod, test) and .env file paths
 fn load_env() {
     let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
 
@@ -20,87 +17,6 @@ fn load_env() {
     } else {
         dotenv().ok(); // Load default .env file for production
     }
-}
-
-fn setup(quiet: bool) {
-    if quiet {
-        return;
-    }
-
-    println!("{}", "\nSetting up your GitHub token...\n".bold().yellow());
-
-    // Determine the correct .env file based on ENV
-    let env_var = env::var("ENV").unwrap_or_else(|_| "production".to_string());
-    let env_file = if env_var == "test" {
-        ".env.test"
-    } else {
-        ".env"
-    };
-
-    // Read existing file content if it exists
-    let mut file_content = String::new();
-    if Path::new(env_file).exists() {
-        if let Ok(mut file) = File::open(env_file) {
-            file.read_to_string(&mut file_content).ok();
-        }
-    }
-
-    println!(
-        "{}",
-        "Please enter your GitHub personal access token:"
-            .bold()
-            .blue()
-    );
-
-    let mut token = String::new();
-    io::stdin()
-        .read_line(&mut token)
-        .expect("Failed to read line");
-
-    if token.is_empty() {
-        eprintln!("Token cannot be empty.");
-        return;
-    }
-
-    let token = token.trim();
-
-    // Update the token in the file content or append if not present
-    let new_content = if file_content.contains("GITHUB_PAT=") {
-        // Replace the existing token line
-        file_content
-            .lines()
-            .map(|line| {
-                if line.starts_with("GITHUB_PAT=") {
-                    format!("GITHUB_PAT={}", token)
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect::<Vec<String>>()
-            .join("\n")
-    } else {
-        // Append token to the end of the file
-        if file_content.is_empty() {
-            format!("GITHUB_PAT={}\n", token)
-        } else {
-            format!("{}\nGITHUB_PAT={}\n", file_content, token)
-        }
-    };
-
-    // Write updated content back to the file
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(env_file)
-        .expect("Failed to open .env file for writing");
-    file.write_all(new_content.as_bytes())
-        .expect("Failed to write token to .env");
-
-    // Update the running environment variable
-    env::set_var("GITHUB_PAT", token);
-
-    println!("{}", "Token saved successfully\n".yellow());
 }
 
 #[tokio::main]
@@ -165,60 +81,22 @@ async fn main() {
         break; // Exit loop once token is valid
     }
 
-    // if let Err(e) = github_client::open_test_pr().await {
-    //     if quiet {
-    //         eprintln!("Could not open pull request");
-    //         exit(1);
-    //     } else {
-    //         println!(
-    //             "{} {}",
-    //             "\n❌ Could not open pull request.\n".bold().red(),
-    //             e
-    //         );
-    //     }
-    // } else {
-    //     println!("Success! Opened PR!")
-    // }
+    // TODO: Let users set this via CLI or via some other UI
+    let repo_owner = "nickagliano".to_string();
+    let repo_name = "dredger".to_string();
 
-    let root_node = github_client::read_repo().await.unwrap();
+    // TODO: Implement multiple models, update this based on selected open source model
+    let tokenizer_path = "tokenizers/llama.json".to_string(); // or "deepseek-tokenizer.json"
 
-    match ollama_client::process_repo(&root_node).await {
-        Ok(response) => println!("LLM Response: {:?}", response),
-        Err(e) => eprintln!("Error querying Ollama: {}", e),
-    }
-}
+    let root_node = core::actions::dredge_repo(quiet, repo_owner, repo_name, tokenizer_path)
+        .await
+        .unwrap();
 
-fn check_and_setup(suffix: Option<&str>) -> Result<(), &'static str> {
-    // Determine which .env file to load based on the ENV variable
-    let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
-    let env_file = if env == "test" {
-        // Use a random suffix if provided, otherwise the default .env.test
-        if let Some(suffix) = suffix {
-            format!(".env.test.{}", suffix)
-        } else {
-            ".env.test".to_string()
-        }
+    if let RepoNode::Directory { token_count, .. } = &root_node {
+        println!("Total token count: {}", token_count);
     } else {
-        ".env".to_string()
-    };
-
-    // Check if the correct .env file exists
-    if !Path::new(&env_file).exists() {
-        return Err("Missing .env file");
+        eprintln!("Expected a directory but got a file");
     }
-
-    // Read the .env file content
-    let mut file_content = String::new();
-    let mut file = File::open(&env_file).expect("Unable to open .env file");
-    file.read_to_string(&mut file_content)
-        .expect("Unable to read .env file");
-
-    // Check if the GITHUB_PAT is set in the file
-    if !file_content.contains("GITHUB_PAT=") {
-        return Err("Missing GITHUB_PAT in .env file");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -226,7 +104,9 @@ mod tests {
     use super::*;
     use mockito::mock;
     use std::env;
-    use std::fs::{remove_file, write};
+    use std::fs::{remove_file, write, File};
+    use std::io::Write;
+    use std::path::Path;
 
     fn random_suffix() -> String {
         let random_number: u32 = rand::random_range(1000..9999);

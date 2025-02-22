@@ -5,7 +5,7 @@
   - [ ] Nix? Good ol' Dockerfile?
 
 ## Medium
-- [ ]
+- [ ] Look into Llama's "Zero-shot function calling" syntax. Is that useful for this project?
 
 
 ## Low

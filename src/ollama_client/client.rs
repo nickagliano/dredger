@@ -1,4 +1,4 @@
-use crate::github_client::client::RepoNode;
+use crate::github_client::data::RepoNode;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
