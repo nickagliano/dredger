@@ -3,8 +3,7 @@ use colored::*;
 use dotenv::dotenv;
 use dredger::core;
 use dredger::github_client::client as github_client;
-use dredger::github_client::data::RepoNode;
-use dredger::utils::cli::{check_and_setup, setup};
+use dredger::utils::cli::{get_token_from_env, setup_token};
 use std::{env, process::exit};
 use tokio;
 
@@ -21,6 +20,8 @@ fn load_env() {
 
 #[tokio::main]
 async fn main() {
+    load_env();
+
     // Parse CLI arguments
     let matches = Command::new("Dredger")
         .version("1.0")
@@ -37,20 +38,18 @@ async fn main() {
 
     let quiet = matches.get_flag("quiet");
 
-    load_env();
-
     if !quiet {
         println!("{}", "\nRunning Dredger...\n".bold().cyan());
     }
 
     loop {
-        // Check for existing token setup
-        if let Err(_) = check_and_setup(None) {
+        // Check for existing GitHub token setup
+        if let Err(_) = get_token_from_env(None) {
             if quiet {
                 eprintln!("Error: No valid GitHub token found.");
                 exit(1);
             } else {
-                setup(quiet); // Setup the token if it isn't found
+                setup_token(quiet); // Setup the token if it isn't found
             }
         }
 
@@ -66,7 +65,7 @@ async fn main() {
                         .bold()
                         .red()
                 );
-                setup(quiet); // Prompt user to enter a new token if invalid
+                setup_token(quiet); // Prompt user to enter a new token if invalid
                 continue; // Retry the validation after new token entry
             }
         }
@@ -88,15 +87,9 @@ async fn main() {
     // TODO: Implement multiple models, update this based on selected open source model
     let tokenizer_path = "tokenizers/llama.json".to_string(); // or "deepseek-tokenizer.json"
 
-    let root_node = core::actions::dredge_repo(quiet, repo_owner, repo_name, tokenizer_path)
+    core::actions::dredge_repo(quiet, repo_owner, repo_name, tokenizer_path)
         .await
         .unwrap();
-
-    if let RepoNode::Directory { token_count, .. } = &root_node {
-        println!("Total token count: {}", token_count);
-    } else {
-        eprintln!("Expected a directory but got a file");
-    }
 }
 
 #[cfg(test)]
@@ -131,7 +124,7 @@ mod tests {
         env::set_var("ENV", "test");
 
         // Should return Ok because the token is present
-        assert_eq!(check_and_setup(Some(&suffix)), Ok(()));
+        assert_eq!(get_token_from_env(Some(&suffix)), Ok(()));
 
         cleanup_env_test_file(&suffix);
     }
@@ -144,7 +137,7 @@ mod tests {
         env::set_var("ENV", "test");
 
         // Should return error because the random .env.test file doesn't exist
-        assert_eq!(check_and_setup(Some(&suffix)), Err("Missing .env file"));
+        assert_eq!(get_token_from_env(Some(&suffix)), Err("Missing .env file"));
 
         cleanup_env_test_file(&suffix);
     }
@@ -163,7 +156,7 @@ mod tests {
 
         // Should return error because the token is missing
         assert_eq!(
-            check_and_setup(Some(&suffix)),
+            get_token_from_env(Some(&suffix)),
             Err("Missing GITHUB_PAT in .env file")
         );
 

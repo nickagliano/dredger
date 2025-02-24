@@ -9,7 +9,7 @@ pub struct RepoContent {
     pub content: Option<String>, // Only present in single file requests
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RepoNode {
     File {
         name: String,

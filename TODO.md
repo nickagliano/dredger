@@ -1,6 +1,8 @@
 # TODO:
 
 ## High-priority
+- [ ] Do not do any more development until currennt implementation is cleaned up! And write tests for everything!
+- [ ] Use context window checks, do intelligent chunking, actually use the tokenizations we're doing.
 - [ ] Containerize, somehow, the project w/ ollama server
   - [ ] Nix? Good ol' Dockerfile?
 

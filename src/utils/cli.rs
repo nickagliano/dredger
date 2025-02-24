@@ -6,7 +6,8 @@ use std::{
     io::{self, Write},
 };
 
-pub fn setup(quiet: bool) {
+/// Part of
+pub fn setup_token(quiet: bool) {
     if quiet {
         return;
     }
@@ -88,7 +89,7 @@ pub fn setup(quiet: bool) {
 }
 
 /// Setup GitHub API token
-pub fn check_and_setup(suffix: Option<&str>) -> Result<(), &'static str> {
+pub fn get_token_from_env(suffix: Option<&str>) -> Result<(), &'static str> {
     // Determine which .env file to load based on the ENV variable
     let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
     let env_file = if env == "test" {

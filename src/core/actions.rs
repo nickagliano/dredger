@@ -1,6 +1,5 @@
-// use crate::ollama_client::client as ollama_client;
 use crate::github_client::client as github_client;
-use crate::github_client::data::RepoNode;
+use crate::ollama_client::client as ollama_client;
 use crate::utils::errors::DredgerError;
 use colored::*;
 
@@ -16,7 +15,7 @@ pub async fn dredge_repo(
     repo_owner: String,
     repo_name: String,
     tokenizer_path: String,
-) -> Result<RepoNode, Box<DredgerError>> {
+) -> Result<(), Box<DredgerError>> {
     // First, read the repo into dredger RepoNode structure
     // - root node (dir node)
     //   - dir node
@@ -29,7 +28,7 @@ pub async fn dredge_repo(
     //
     // FIXME: Define the tokenizer here, then pass it around instead of re-creating it each
     //        call to parse_repo_recursive
-    let root_node = github_client::read_repo(repo_owner, repo_name, tokenizer_path).await;
+    let root_node = github_client::read_repo(repo_owner, repo_name, tokenizer_path).await?;
 
     // TODO: run Ollama, based on the root node
     // ollama_client::process_root_node();
@@ -38,7 +37,9 @@ pub async fn dredge_repo(
     // ... try and get self-improvement loop, self-rating/self-judging on the docs...
     // ... branching LLM calls in, like 10 equal prompts, and choosing best response...
     // ... if it thinks the docs are good enough, then we can open PR.
-    //
+    ollama_client::process_repo(&root_node.clone())
+        .await
+        .unwrap();
 
     // TODO: If ollama generated good docs that are different enough
     //       from current docs, open PR.
@@ -69,5 +70,5 @@ pub async fn dredge_repo(
         }
     }
 
-    root_node
+    Ok(())
 }
